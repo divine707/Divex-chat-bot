@@ -68,6 +68,8 @@ def chat():
     )
 
     data = response.json()
+    print("GEMINI STATUS:", response.status_code)
+    print("GEMINI RESPONSE:", data)
     reply_text = ""
     try:
         reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
