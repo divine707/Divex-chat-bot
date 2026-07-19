@@ -5,7 +5,8 @@ import requests
 
 app = Flask(__name__)
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 MEMORY_FILE = "memory.json"
 USERNAME = "boss"
 
@@ -48,29 +49,29 @@ def chat():
         "it will be stripped out automatically."
     )
 
+    # Gemini expects "user"/"model" roles and a "parts" list per message
+    gemini_contents = []
+    for m in memory["history"][-20:]:
+        role = "model" if m["role"] == "assistant" else "user"
+        gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
+
     response = requests.post(
-        "https://api.anthropic.com/v1/messages",
+        GEMINI_URL,
         headers={
             "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
+            "x-goog-api-key": GEMINI_API_KEY,
         },
         json={
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 500,
-            "system": system_prompt,
-            "messages": memory["history"][-20:],  # last 20 messages for context
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": gemini_contents,
         },
     )
 
     data = response.json()
     reply_text = ""
-    for block in data.get("content", []):
-        if block.get("type") == "text":
-            reply_text = block["text"]
-            break
-
-    if not reply_text:
+    try:
+        reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
         reply_text = "Sorry, I couldn't come up with a reply just now."
 
     # Extract and store any MEMORY: line, strip it from what the user sees
