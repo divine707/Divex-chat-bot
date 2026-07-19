@@ -1,0 +1,92 @@
+import os
+import json
+from flask import Flask, request, jsonify, render_template
+import requests
+
+app = Flask(__name__)
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+MEMORY_FILE = "memory.json"
+USERNAME = "boss"
+
+# ---- Simple memory: a JSON file storing facts learned about the user ----
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
+    return {"facts": [], "history": []}
+
+def save_memory(memory):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+memory = load_memory()
+
+
+@app.route("/")
+def home():
+    return render_template("index.html", username=USERNAME)
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    user_message = request.json.get("message", "")
+
+    # Add user's message to running history
+    memory["history"].append({"role": "user", "content": user_message})
+
+    # Build the system prompt using any facts learned so far
+    facts_text = "\n".join(f"- {fact}" for fact in memory["facts"])
+    system_prompt = (
+        f"You are a helpful assistant talking to {USERNAME}. "
+        f"Here is what you remember about {USERNAME} so far:\n{facts_text or 'Nothing yet.'}\n"
+        "If the user shares a durable personal fact or preference worth remembering "
+        "(like a name, a preference, a goal), include it at the very end of your reply "
+        "on its own line formatted exactly like: MEMORY: <short fact>. "
+        "Only include a MEMORY line when there's actually something new and worth keeping. "
+        "Never show the MEMORY line as part of your visible answer to the user's question — "
+        "it will be stripped out automatically."
+    )
+
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
+        json={
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 500,
+            "system": system_prompt,
+            "messages": memory["history"][-20:],  # last 20 messages for context
+        },
+    )
+
+    data = response.json()
+    reply_text = ""
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            reply_text = block["text"]
+            break
+
+    if not reply_text:
+        reply_text = "Sorry, I couldn't come up with a reply just now."
+
+    # Extract and store any MEMORY: line, strip it from what the user sees
+    visible_reply = reply_text
+    for line in reply_text.splitlines():
+        if line.strip().startswith("MEMORY:"):
+            fact = line.strip()[len("MEMORY:"):].strip()
+            if fact and fact not in memory["facts"]:
+                memory["facts"].append(fact)
+            visible_reply = visible_reply.replace(line, "").strip()
+
+    memory["history"].append({"role": "assistant", "content": visible_reply})
+    save_memory(memory)
+
+    return jsonify({"reply": visible_reply})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
